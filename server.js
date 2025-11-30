@@ -35,14 +35,12 @@ function loadTokens() {
 // --- GET new token ---
 app.get("/api/new-token", (req, res) => {
   if (!tokens.length) loadTokens();
-
   if (!tokens.length) return res.status(404).json({ error: "No tokens available" });
 
   const token = tokens.shift(); // take first available token
   const stats = getStats(token);
 
   res.json({ token, stats });
-
   console.log(`Token assigned: ${token}`);
 });
 
@@ -54,19 +52,39 @@ app.get("/api/stats/:token", (req, res) => {
   res.json(stats);
 });
 
-// --- POST stats/update for token ---
+// --- POST stats/update for token (called by victory) ---
 app.post("/api/stats/:token", (req, res) => {
   const token = req.params.token;
   const { xp = 0, completed = 0, run = null } = req.body;
 
   const stats = getStats(token);
-  stats.xp = xp;
-  stats.completed = completed;
+  stats.xp += xp;
+  stats.completed += completed;
   if (run) stats.runs.push(run);
 
   saveStats(token, stats);
-  console.log(`Data for ${token} updated: XP=${xp}, completed=${completed}`);
+  console.log(`Data for ${token} updated: XP=${stats.xp}, completed=${stats.completed}`);
   res.json({ success: true, stats });
+});
+
+// --- GLOBAL LEADERBOARD ---
+app.get("/api/leaderboard", (req, res) => {
+  const files = fs.readdirSync(DATA_DIR).filter(f => f.endsWith(".json"));
+  let allRuns = [];
+  for (const file of files) {
+    const data = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), "utf-8"));
+    if (data.runs && data.runs.length) {
+      allRuns = allRuns.concat(data.runs.map(r => ({
+        username: r.username,
+        time: r.time,
+        xp: r.xp,
+        date: r.date
+      })));
+    }
+  }
+  // Sort by fastest time
+  allRuns.sort((a,b)=>a.time-b.time);
+  res.json(allRuns.slice(0, 10)); // top 10
 });
 
 // --- Helpers ---

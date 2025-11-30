@@ -1,133 +1,88 @@
+// server.js - SuperMaze Auth Server (with CORS)
+const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const express = require("express");
-
-const PORT = process.env.PORT || 3000;
-const TOKENS_FILE = path.join(__dirname, "tokens.txt");
-const DATA_DIR = path.join(__dirname, "data");
-const ADMIN_KEY = process.env.ADMIN_KEY || "change-me";
-
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+const cors = require("cors"); // added
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+
+// --- Middleware ---
+app.use(cors()); // allow all origins for testing / frontend
 app.use(express.json());
 
-// Load tokens
-let availableTokens = fs.readFileSync(TOKENS_FILE, "utf-8")
-  .split(/\r?\n/)
-  .filter(Boolean);
+const DATA_DIR = path.join(__dirname, "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
-// Remove tokens that already have JSON files (taken)
-availableTokens = availableTokens.filter(token => !fs.existsSync(path.join(DATA_DIR, token + ".json")));
+// --- In-memory token map ---
+let tokens = [];
 
-// ---------- Helpers ----------
-function getPlayerFile(token) {
-  return path.join(DATA_DIR, token + ".json");
+// Load tokens.txt into memory
+function loadTokens() {
+  const tokenFile = path.join(__dirname, "tokens.txt");
+  if (!fs.existsSync(tokenFile)) fs.writeFileSync(tokenFile, "");
+  const content = fs.readFileSync(tokenFile, "utf-8");
+  tokens = content.split("\n").filter(Boolean);
 }
 
-function readPlayer(token) {
-  const file = getPlayerFile(token);
-  if (!fs.existsSync(file)) return null;
-  return JSON.parse(fs.readFileSync(file, "utf-8"));
-}
+// --- GET new token ---
+app.get("/api/new-token", (req, res) => {
+  if (!tokens.length) loadTokens();
 
-function writePlayer(token, data) {
-  const file = getPlayerFile(token);
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
+  if (!tokens.length) return res.status(404).json({ error: "No tokens available" });
 
-// ---------- API ----------
+  const token = tokens.shift(); // take first available token
+  const stats = getStats(token); // always returns default if missing
 
-// Take a new token (register new player)
-app.post("/take-token", (req, res) => {
-  const { username } = req.body;
-  if (!username) return res.status(400).json({ ok: false, error: "username_required" });
+  res.json({ token, stats });
 
-  if (availableTokens.length === 0) return res.status(400).json({ ok: false, error: "no_tokens_available" });
-
-  // Assign first available token
-  const token = availableTokens.shift();
-
-  // Create player JSON
-  const playerData = {
-    token,
-    username,
-    xp: 0,
-    wins: 0,
-    runs: 0
-  };
-  writePlayer(token, playerData);
-
-  res.json({ ok: true, token, data: playerData });
+  console.log(`Token assigned: ${token}`);
 });
 
-// Validate token
-app.post("/validate", (req, res) => {
-  const { token } = req.body;
-  const player = readPlayer(token);
-  if (!player) return res.status(401).json({ ok: false, valid: false });
-  res.json({ ok: true, valid: true });
-});
-
-// Get player stats
-app.get("/player/:token", (req, res) => {
+// --- GET stats for token ---
+app.get("/api/stats/:token", (req, res) => {
   const token = req.params.token;
-  const player = readPlayer(token);
-  if (!player) return res.status(404).json({ error: "player_not_found" });
-  res.json(player);
+  const stats = getStats(token);
+  if (!stats) return res.status(404).json({ error: "Token not found" });
+  res.json(stats);
 });
 
-// Update player stats
-app.post("/player/:token", (req, res) => {
+// --- POST stats/update for token ---
+app.post("/api/stats/:token", (req, res) => {
   const token = req.params.token;
-  const player = readPlayer(token);
-  if (!player) return res.status(404).json({ error: "player_not_found" });
+  const { xp = 0, completed = 0, run = null } = req.body;
 
-  const { username, xp, wins, runs } = req.body;
-  if (username !== undefined) player.username = username;
-  if (xp !== undefined) player.xp = xp;
-  if (wins !== undefined) player.wins = wins;
-  if (runs !== undefined) player.runs = runs;
+  const stats = getStats(token);
+  stats.xp = xp;
+  stats.completed = completed;
+  if (run) stats.runs.push(run);
 
-  writePlayer(token, player);
-  res.json({ ok: true, data: player });
+  saveStats(token, stats);
+  console.log(`Data for ${token} updated: XP=${xp}, completed=${completed}`);
+  res.json({ success: true, stats });
 });
 
-// Leaderboard (top by xp, then wins)
-app.get("/leaderboard", (req, res) => {
-  const files = fs.readdirSync(DATA_DIR);
-  const players = files.map(f => JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), "utf-8")));
-  players.sort((a, b) => b.xp - a.xp || b.wins - a.wins);
-  res.json(players.slice(0, 50));
-});
-
-// Admin endpoints
-function checkAdmin(req) {
-  const key = req.headers["x-admin-key"] || req.query.admin_key || req.body.admin_key;
-  return key === ADMIN_KEY;
+// --- Helpers ---
+function getStats(token) {
+  const file = path.join(DATA_DIR, token + ".json");
+  if (!fs.existsSync(file)) {
+    const defaultStats = { xp: 0, completed: 0, runs: [] };
+    saveStats(token, defaultStats); // auto-create file
+    return defaultStats;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch {
+    const defaultStats = { xp: 0, completed: 0, runs: [] };
+    saveStats(token, defaultStats);
+    return defaultStats;
+  }
 }
 
-// Delete a player (admin)
-app.delete("/admin/player/:token", (req, res) => {
-  if (!checkAdmin(req)) return res.status(403).json({ ok: false, error: "not_admin" });
-  const token = req.params.token;
-  const file = getPlayerFile(token);
-  if (!fs.existsSync(file)) return res.status(404).json({ ok: false, error: "player_not_found" });
-  fs.unlinkSync(file);
-  availableTokens.push(token); // make token reusable
-  res.json({ ok: true });
-});
+function saveStats(token, stats) {
+  const file = path.join(DATA_DIR, token + ".json");
+  fs.writeFileSync(file, JSON.stringify(stats, null, 2));
+}
 
-// List all players (admin)
-app.get("/admin/players", (req, res) => {
-  if (!checkAdmin(req)) return res.status(403).json({ ok: false, error: "not_admin" });
-  const files = fs.readdirSync(DATA_DIR);
-  const players = files.map(f => JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), "utf-8")));
-  res.json(players);
-});
-
-// Health check
-app.get("/health", (req, res) => res.json({ ok: true }));
-
-// Start server
-app.listen(PORT, () => console.log(`SuperMaze auth server running on port ${PORT} on Frankfurt, Germany (EU Central)`));
+// --- Start server ---
+app.listen(PORT, () => console.log(`SuperMaze Auth Server running on port ${PORT}`));

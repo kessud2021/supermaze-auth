@@ -1,15 +1,22 @@
-// server.js - SuperMaze Auth Server (with CORS)
+// server.js - SuperMaze Auth Server (CORS enabled manually)
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const cors = require("cors"); // added
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // --- Middleware ---
-app.use(cors()); // allow all origins for testing / frontend
 app.use(express.json());
+
+// Manual CORS headers
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*"); // allow all origins
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
 
 const DATA_DIR = path.join(__dirname, "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
@@ -32,7 +39,7 @@ app.get("/api/new-token", (req, res) => {
   if (!tokens.length) return res.status(404).json({ error: "No tokens available" });
 
   const token = tokens.shift(); // take first available token
-  const stats = getStats(token); // always returns default if missing
+  const stats = getStats(token);
 
   res.json({ token, stats });
 
@@ -67,7 +74,7 @@ function getStats(token) {
   const file = path.join(DATA_DIR, token + ".json");
   if (!fs.existsSync(file)) {
     const defaultStats = { xp: 0, completed: 0, runs: [] };
-    saveStats(token, defaultStats); // auto-create file
+    saveStats(token, defaultStats);
     return defaultStats;
   }
   try {
